@@ -63,7 +63,7 @@ print("\nPublished → ordinal (sample):")
 print(df[['published', 'date_ordinal']].head(3))
 
 # ------------------------------
-# Step 4: Create a binary label column by grouping multiple misinfo types into “fake”
+# Step 4: Create a binary label column by grouping multiple misinfo types into “fake” 
 # ------------------------------
 misinfo_types = {
     'bs', 'conspiracy', 'hate', 'satire', 'state', 'junksci', 'fake'
@@ -139,3 +139,53 @@ val_df.to_csv("val_split.csv",     index=False)
 test_df.to_csv("test_split.csv",   index=False)
 
 print("\nSaved 'train_split.csv', 'val_split.csv', and 'test_split.csv'.")
+
+# ------------------------------
+# Step 7: Address Class Imbalance by undersampling the fake class
+# ------------------------------
+fake_df = df[df['label'] == 'fake'] # Get only the fake articles
+real_df = df[df['label'] == 'real'] # Get only the real articles
+fake_sample = fake_df.sample(n=len(real_df), random_state=42) # Randomly sample fake articles to match the number of real articles
+df_balanced = pd.concat([real_df, fake_sample]).sample(frac=1, random_state=42).reset_index(drop=True) # Create balanced dataframe and shuffle
+print("\n=== Step 7: After Undersampling ===")
+print("Label distribution after undersampling:")
+print(df_balanced['label'].value_counts(normalize=True))
+
+counts = df_balanced['label'].value_counts()
+print(f"Fake articles: {counts['fake']}")
+print(f"Real articles: {counts['real']}")
+
+# ------------------------------
+# Step 8: Select columns for balanced modeling
+# ------------------------------
+df_final_bal = df_balanced[['combined_text', 'publisher_id', 'date_ordinal', 'label']].copy() # Select the same columns as before
+
+print("\n=== Step 8: Final Columns (Balanced) ===")
+print("Columns in df_final_bal:", df_final_bal.columns.tolist())
+print(df_final_bal.head(3))
+
+# ------------------------------
+# Step 9: Split balanced data into train/val/test
+# ------------------------------
+Xb = df_final_bal[['combined_text', 'publisher_id', 'date_ordinal']] # Select features (X)
+yb = df_final_bal['label'] # Select labels (y)
+Xb_train, Xb_temp, yb_train, yb_temp = train_test_split(
+    Xb, yb, test_size=0.30, stratify=yb, random_state=42
+) # 70% train, 30% temporary (to be split into val/test)
+Xb_val, Xb_test, yb_val, yb_test = train_test_split(
+    Xb_temp, yb_temp, test_size=0.50, stratify=yb_temp, random_state=42
+) # 50% of temporary for validation, 50% for test (each 15% of total)
+
+print("\nBalanced splits:")
+print(f" Training: {len(Xb_train)} | Validation: {len(Xb_val)} | Test: {len(Xb_test)}")
+print("Distribution (Balanced Training):")
+print(yb_train.value_counts(normalize=True))
+
+# Recombine features and labels into a dataframe for each split (Train, Val, Test)
+b_train_df = pd.concat([Xb_train, yb_train], axis=1) 
+b_val_df   = pd.concat([Xb_val,   yb_val],   axis=1)
+b_test_df  = pd.concat([Xb_test,  yb_test],  axis=1)
+b_train_df.to_csv('train_split_balanced.csv', index=False)
+b_val_df.to_csv('val_split_balanced.csv',     index=False)
+b_test_df.to_csv('test_split_balanced.csv',   index=False)
+print("\nSaved balanced splits as 'train_split_balanced.csv', 'val_split_balanced.csv', and 'test_split_balanced.csv'.")
