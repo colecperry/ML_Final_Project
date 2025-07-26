@@ -1,16 +1,31 @@
 import os
+import random
 import pandas as pd
 import torch
 import numpy as np
 from scipy.special import softmax
 from torch.utils.data import Dataset
 from transformers import (
+    set_seed,
     DebertaTokenizerFast,
     AutoModelForSequenceClassification,
     TrainingArguments,
     Trainer
 )
-from sklearn.metrics import precision_recall_fscore_support, classification_report
+from sklearn.metrics import (
+    precision_recall_fscore_support,
+    classification_report,
+    confusion_matrix,
+    accuracy_score
+)
+
+# Remove all sources of randomness
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
+set_seed(SEED)
 
 # ------------------------------
 # 1) Load our pre-split data files
@@ -69,7 +84,9 @@ def compute_metrics(pred):
 # ------------------------------
 # 5) Train a “base” DeBERTa and find its best threshold
 # ------------------------------
-base_model = AutoModelForSequenceClassification.from_pretrained("microsoft/deberta-large", num_labels=2)
+base_model = AutoModelForSequenceClassification.from_pretrained(
+    "microsoft/deberta-large", num_labels=2
+)
 base_args  = TrainingArguments(
     output_dir="deberta_base_output",
     num_train_epochs=3,
@@ -81,7 +98,8 @@ base_args  = TrainingArguments(
     logging_dir="logs",
     logging_steps=50,
     save_strategy="no",
-    report_to="none"
+    report_to="none",
+    seed=SEED
 )
 base_trainer = Trainer(
     model=base_model,
@@ -133,7 +151,8 @@ for lr in learning_rates:
                 logging_dir="logs",
                 logging_steps=50,
                 save_strategy="no",
-                report_to="none"
+                report_to="none",
+                seed=SEED
             )
             combo_model = AutoModelForSequenceClassification.from_pretrained(
                 "microsoft/deberta-large", num_labels=2
@@ -151,7 +170,6 @@ for lr in learning_rates:
             out   = combo_trainer.predict(val_dataset)
             probs = softmax(out.predictions, axis=1)[:, 1]
 
-            # sweep thresholds too
             best_thr, best_f1 = 0.0, 0.0
             for thr in np.arange(0.10, 0.91, 0.01):
                 preds = (probs >= thr).astype(int)
@@ -171,14 +189,14 @@ print(f"LR={best_overall['lr']}, BS={best_overall['bs']}, WD={best_overall['wd']
 # 7) Final training & test evaluation
 # ------------------------------
 print("\n=== Retraining best combo on train+val, then testing ===")
-# combine train+val
 combined_df     = pd.concat([train_df, val_df], ignore_index=True)
 combined_labels = combined_df["label"].map(label_mapping).tolist()
-combined_ds     = FakeNewsDataset(combined_df["combined_text"].tolist(),
-                                  combined_labels,
-                                  tokenizer)
+combined_ds     = FakeNewsDataset(
+    combined_df["combined_text"].tolist(),
+    combined_labels,
+    tokenizer
+)
 
-# retrain with best hyperparams
 final_args = TrainingArguments(
     output_dir="deberta_final_output",
     num_train_epochs=3,
@@ -190,7 +208,8 @@ final_args = TrainingArguments(
     logging_dir="logs",
     logging_steps=50,
     save_strategy="no",
-    report_to="none"
+    report_to="none",
+    seed=SEED
 )
 final_model = AutoModelForSequenceClassification.from_pretrained(
     "microsoft/deberta-large", num_labels=2
@@ -208,5 +227,25 @@ test_out   = final_trainer.predict(test_dataset)
 test_probs = softmax(test_out.predictions, axis=1)[:, 1]
 test_preds = (test_probs >= best_overall["thr"]).astype(int)
 
-print(f"\nTest Set Report @ thr={best_overall['thr']:.2f}")
-print(classification_report(test_labels, test_preds, target_names=["real","fake"]))
+# **detailed terminal output**
+print(f"\nTest set size: {len(test_labels)}")
+labels, counts = np.unique(test_labels, return_counts=True)
+print(f"Label distribution (real, fake): {dict(zip(labels, counts))}\n")
+
+cm = confusion_matrix(test_labels, test_preds)
+tn, fp, fn, tp = cm.ravel()
+print("Confusion Matrix Counts:")
+print(f"  True Negative (real→real): {tn}")
+print(f"  False Positive (real→fake): {fp}")
+print(f"  False Negative (fake→real): {fn}")
+print(f"  True Positive (fake→fake): {tp}\n")
+
+acc = accuracy_score(test_labels, test_preds)
+prec, rec, f1, _ = precision_recall_fscore_support(
+    test_labels, test_preds, average="macro"
+)
+print("Final Test Metrics:")
+print(f"  Accuracy : {acc:.4f}")
+print(f"  Precision: {prec:.4f}")
+print(f"  Recall   : {rec:.4f}")
+print(f"  Macro-F1 : {f1:.4f}\n")
